@@ -75,6 +75,7 @@ These events are intended to make the dispute lifecycle auditable and easy to co
 | voting_end   | u64           | Timestamp when voting ends             |
 | status       | DisputeStatus | Current status in the lifecycle        |
 | outcome      | u32           | Winning outcome (0 when Tied or NoQuorum) |
+| round        | u32           | Current voting round; incremented on reopen |
 
 ### ArbitrationError
 
@@ -120,15 +121,19 @@ Creates a new dispute. Requires creator authorization. Returns the dispute ID. S
 
 ### `cancel_dispute(caller: Address, dispute_id: u64) -> Result<(), ArbitrationError>`
 
-Cancels a dispute. Only the creator or admin may cancel. Valid from `Open` or `Voting` status. The creator may cancel a `Voting` dispute only while no votes have been cast (`VoterCounter(dispute_id) == 0`) and `now <= voting_end`; otherwise the call returns `CancelNotAllowed`. The admin may cancel a `Voting` dispute at any time before resolution, and the `dispute_cancelled` event reports `cancelled_by_role` as `"admin"`.
+Cancels a dispute. Only the creator or admin may cancel. Valid from `Open` or `Voting` status. The creator may cancel a `Voting` dispute only while no votes have been cast (`VoterCounter(dispute_id, round) == 0`) and `now <= voting_end`; otherwise the call returns `CancelNotAllowed`. The admin may cancel a `Voting` dispute at any time before resolution, and the `dispute_cancelled` event reports `cancelled_by_role` as `"admin"`.
 
 ### `vote(voter: Address, dispute_id: u64, outcome: u32) -> Result<(), ArbitrationError>`
 
-Casts a weighted vote for an outcome. Requires voter authorization. Voter must be a registered arbitrator. Dispute must be in `Voting` status. A dispute's creator cannot vote on their own dispute; such a call returns `ConflictOfInterest`.
+Casts a weighted vote for an outcome. Requires voter authorization. Voter must be a registered arbitrator. Dispute must be in `Voting` status. Each arbitrator may vote once per round. A dispute's creator cannot vote on their own dispute; such a call returns `ConflictOfInterest`.
 
 ### `resolve_dispute(dispute_id: u64) -> Result<u32, ArbitrationError>`
 
 Resolves the dispute after the voting period has ended. Transitions `Voting → Resolving → Resolved` (or `Tied` if outcomes are tied). If configured quorum is not met, transitions `Voting → Resolving → NoQuorum`, keeps votes and tallies for audit, clears the creator's active-dispute guard, emits `quorum_not_met`, and returns 0. A NoQuorum dispute is terminal and can be archived and reopened by an admin.
+
+### `reopen_dispute(admin: Address, dispute_id: u64, duration: u64) -> Result<(), ArbitrationError>`
+
+Reopens an archived dispute for a new voting round. The round counter increments, making all earlier voter flags, voter counts, and tallies inactive without enumerating the arbitrator registry. Reopening returns `OngoingDispute` if the creator already has a different dispute in `Voting` or `Resolving`.
 
 ### `get_dispute(dispute_id: u64) -> Result<Dispute, ArbitrationError>`
 
@@ -136,7 +141,7 @@ Retrieves the details of a specific dispute.
 
 ### `get_tally(dispute_id: u64, outcome: u32) -> i128`
 
-Returns the current total weight for a specific outcome.
+Returns the current total weight for a specific outcome in the current voting round.
 
 ## Events
 
