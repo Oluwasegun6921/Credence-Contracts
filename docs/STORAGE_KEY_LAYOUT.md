@@ -85,9 +85,9 @@ Single enum `DataKey` (`contracts/arbitration/src/lib.rs`), all **instance** sto
 | `Arbitrator(Address)` | Voting weight for a registered arbitrator |
 | `Dispute(u64)` | Dispute record by id |
 | `DisputeCounter` | Next dispute id |
-| `DisputeVotes(u64)` | Per-outcome weight tally for a dispute |
-| `VoterCasted(u64, Address)` | Has-voted flag per (dispute, voter) |
-| `VoterCounter(u64)` | Distinct-voter count per dispute (quorum check) |
+| `DisputeVotes(u64, u32)` | Per-outcome weight tally for a dispute and voting round |
+| `VoterCasted(u64, u32, Address)` | Has-voted flag per (dispute, round, voter) |
+| `VoterCounter(u64, u32)` | Distinct-voter count per dispute and round (quorum check) |
 | `ArbitratorRegistry` | `Vec<Address>` of all registered arbitrators |
 | `MinTotalWeight` / `MinVoters` | Quorum configuration |
 | `ActiveDispute(Address)` | Tracks a creator's in-flight dispute (one-at-a-time guard) |
