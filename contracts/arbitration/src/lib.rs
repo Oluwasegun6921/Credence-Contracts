@@ -52,6 +52,8 @@ pub struct Dispute {
     /// Winning outcome (0 for Tied or NoQuorum, >0 = specific outcome).
     /// The outcome field must never be 0 if status == Resolved, as vote() rejects outcome 0 as InvalidOutcome.
     pub outcome: u32,
+    /// Monotonically increasing voting round; reopening starts a fresh round.
+    pub round: u32,
     pub cancellation_reason: Option<String>,
     pub cancelled_by_role: Option<Symbol>,
 }
@@ -70,9 +72,9 @@ pub enum DataKey {
     Arbitrator(Address),
     Dispute(u64),
     DisputeCounter,
-    DisputeVotes(u64),
-    VoterCasted(u64, Address),
-    VoterCounter(u64),
+    DisputeVotes(u64, u32),
+    VoterCasted(u64, u32, Address),
+    VoterCounter(u64, u32),
     ArbitratorRegistry,
     MinTotalWeight,
     MinVoters,
@@ -114,6 +116,14 @@ fn require_no_ongoing_dispute(e: &Env, creator: &Address) -> Result<(), Arbitrat
 
     e.storage().instance().remove(&key);
     Ok(())
+}
+
+fn current_dispute_round(e: &Env, dispute_id: u64) -> u32 {
+    e.storage()
+        .instance()
+        .get::<DataKey, Dispute>(&DataKey::Dispute(dispute_id))
+        .map(|dispute| dispute.round)
+        .unwrap_or(0)
 }
 
 fn clear_active_dispute(e: &Env, creator: &Address) {
@@ -270,6 +280,7 @@ impl CredenceArbitration {
             voting_end: end,
             status: DisputeStatus::Voting,
             outcome: 0,
+            round: 0,
             cancellation_reason: None,
             cancelled_by_role: None,
         };
@@ -334,7 +345,7 @@ impl CredenceArbitration {
             let voter_count: u32 = e
                 .storage()
                 .instance()
-                .get(&DataKey::VoterCounter(dispute_id))
+                .get(&DataKey::VoterCounter(dispute_id, dispute.round))
                 .unwrap_or(0);
             let now = e.ledger().timestamp();
             if voter_count != 0 || now > dispute.voting_end {
@@ -406,14 +417,14 @@ impl CredenceArbitration {
             return Err(ArbitrationError::VotingInactive);
         }
 
-        let voter_casted_key = DataKey::VoterCasted(dispute_id, voter.clone());
+        let voter_casted_key = DataKey::VoterCasted(dispute_id, dispute.round, voter.clone());
         if e.storage().instance().has(&voter_casted_key) {
             return Err(ArbitrationError::AlreadyVoted);
         }
         e.storage().instance().set(&voter_casted_key, &true);
 
         // Track distinct voter count for quorum
-        let voter_counter_key = DataKey::VoterCounter(dispute_id);
+        let voter_counter_key = DataKey::VoterCounter(dispute_id, dispute.round);
         let voter_count: u32 = e.storage().instance().get(&voter_counter_key).unwrap_or(0);
         e.storage().instance().set(
             &voter_counter_key,
@@ -422,7 +433,7 @@ impl CredenceArbitration {
                 .unwrap_or_else(|| panic_with_error!(&e, ContractError::Overflow)),
         );
 
-        let votes_key = DataKey::DisputeVotes(dispute_id);
+        let votes_key = DataKey::DisputeVotes(dispute_id, dispute.round);
         let mut votes: Map<u32, i128> = e
             .storage()
             .instance()
@@ -477,7 +488,7 @@ impl CredenceArbitration {
             let votes: Map<u32, i128> = e
                 .storage()
                 .instance()
-                .get(&DataKey::DisputeVotes(dispute_id))
+                .get(&DataKey::DisputeVotes(dispute_id, dispute.round))
                 .unwrap_or(Map::new(&e));
 
             let mut total_weight: i128 = 0;
@@ -490,7 +501,7 @@ impl CredenceArbitration {
             let voter_count: u32 = e
                 .storage()
                 .instance()
-                .get(&DataKey::VoterCounter(dispute_id))
+                .get(&DataKey::VoterCounter(dispute_id, dispute.round))
                 .unwrap_or(0);
 
             let weight_met = total_weight >= min_total_weight;
@@ -542,7 +553,7 @@ impl CredenceArbitration {
         );
 
         // Tally
-        let votes_key = DataKey::DisputeVotes(dispute_id);
+        let votes_key = DataKey::DisputeVotes(dispute_id, dispute.round);
         let votes: Map<u32, i128> = e
             .storage()
             .instance()
@@ -671,7 +682,8 @@ impl CredenceArbitration {
     /// Get current total weight for an outcome.
     pub fn get_tally(e: Env, dispute_id: u64, outcome: u32) -> i128 {
         bump_instance_ttl(&e);
-        let votes_key = DataKey::DisputeVotes(dispute_id);
+        let round = current_dispute_round(&e, dispute_id);
+        let votes_key = DataKey::DisputeVotes(dispute_id, round);
         let votes: Map<u32, i128> = e
             .storage()
             .instance()
@@ -709,9 +721,10 @@ impl CredenceArbitration {
     /// `true` if the voter has already voted, `false` otherwise.
     pub fn has_voted(e: Env, dispute_id: u64, voter: Address) -> bool {
         bump_instance_ttl(&e);
+        let round = current_dispute_round(&e, dispute_id);
         e.storage()
             .instance()
-            .has(&DataKey::VoterCasted(dispute_id, voter))
+            .has(&DataKey::VoterCasted(dispute_id, round, voter))
     }
 
     /// Get a paginated list of registered arbitrator addresses.
@@ -871,10 +884,14 @@ impl CredenceArbitration {
             .ok_or(ArbitrationError::DisputeNotFound)?;
         let from = dispute.status;
         require_transition(from, DisputeStatus::Voting)?;
+        require_no_ongoing_dispute(&e, &dispute.creator)?;
         let now = e.ledger().timestamp();
         let new_end = now
             .checked_add(duration)
             .unwrap_or_else(|| panic_with_error!(&e, ContractError::Overflow));
+        dispute.round = dispute.round.checked_add(1).unwrap_or_else(|| {
+            panic_with_error!(&e, ContractError::Overflow)
+        });
         dispute.status = DisputeStatus::Voting;
         dispute.voting_start = now;
         dispute.voting_end = new_end;
@@ -894,22 +911,8 @@ impl CredenceArbitration {
             &dispute_id,
         );
 
-        // Clear vote tracking data for the reopened dispute
-        let voter_counter_key = DataKey::VoterCounter(dispute_id);
-        e.storage().instance().remove(&voter_counter_key);
-        let votes_key = DataKey::DisputeVotes(dispute_id);
-        e.storage().instance().remove(&votes_key);
-
-        // Clear VoterCasted entries for all registered arbitrators
-        let registry: Vec<Address> = e
-            .storage()
-            .instance()
-            .get(&DataKey::ArbitratorRegistry)
-            .unwrap_or_else(|| Vec::new(&e));
-        for addr in registry.iter() {
-            let voter_casted_key = DataKey::VoterCasted(dispute_id, addr);
-            e.storage().instance().remove(&voter_casted_key);
-        }
+        // Incrementing the round above makes all prior vote state unreachable.
+        // No voter enumeration or registry-sized storage loop is required.
         e.events().publish(
             (Symbol::new(&e, "dispute_reopened"), dispute_id),
             from as u32,
