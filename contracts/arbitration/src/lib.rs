@@ -101,7 +101,10 @@ fn require_no_ongoing_dispute(e: &Env, creator: &Address) -> Result<(), Arbitrat
         return Ok(());
     };
 
-    let Some(dispute) = e.storage().instance().get::<DataKey, Dispute>(&DataKey::Dispute(active_id))
+    let Some(dispute) = e
+        .storage()
+        .instance()
+        .get::<DataKey, Dispute>(&DataKey::Dispute(active_id))
     else {
         e.storage().instance().remove(&key);
         return Ok(());
@@ -889,9 +892,10 @@ impl CredenceArbitration {
         let new_end = now
             .checked_add(duration)
             .unwrap_or_else(|| panic_with_error!(&e, ContractError::Overflow));
-        dispute.round = dispute.round.checked_add(1).unwrap_or_else(|| {
-            panic_with_error!(&e, ContractError::Overflow)
-        });
+        dispute.round = dispute
+            .round
+            .checked_add(1)
+            .unwrap_or_else(|| panic_with_error!(&e, ContractError::Overflow));
         dispute.status = DisputeStatus::Voting;
         dispute.voting_start = now;
         dispute.voting_end = new_end;
