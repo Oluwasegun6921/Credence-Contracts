@@ -21,6 +21,7 @@ Represents the state and parameters of an arbitration case.
 | `resolved` | `bool` | Whether the dispute has been finalized. |
 | `status` | `DisputeStatus` | Lifecycle state, including `NoQuorum` when configured quorum is missed. |
 | `outcome` | `u32` | The winning result (0 for `Tied` or `NoQuorum`). |
+| `round` | `u32` | Current voting round; incremented whenever an archived dispute is reopened. |
 
 ### Dispute status values
 
@@ -74,7 +75,7 @@ Casts a weighted vote for a specific outcome.
 * **Weighted Tally**: The total score for an outcome is the sum of the `weight` of all arbitrators who voted for it.
 * **Constraints**:
 * Voter must be a registered arbitrator.
-* One vote per arbitrator per dispute.
+* One vote per arbitrator per dispute round. Reopening starts a new round and voids all previous votes.
 * Must occur between `voting_start` and `voting_end`.
 
 
@@ -89,6 +90,14 @@ Calculates the winner and closes the case.
 * **Quorum miss**: When configured minimum total weight or voter count is not met, the contract transitions through `Resolving` to terminal `NoQuorum`, stores outcome `0`, preserves vote tallies, releases the creator's active-dispute guard, publishes `status_transition` and `quorum_not_met`, and returns `0` successfully. The event data is `(total_weight, min_total_weight, voter_count, min_voters)`. This is a successful call so its events are persisted on-ledger.
 * **Archive and reopen**: Admins may archive `NoQuorum` disputes and reopen them using the existing archived-dispute flow.
 
+### `reopen_dispute(e: Env, admin: Address, dispute_id: u64, duration: u64)`
+
+Moves an archived dispute back to voting for a fresh round.
+
+* **Round reset**: Increments `Dispute.round`; voter flags, voter counts, and tallies are scoped to that round, so previous votes are void without enumerating arbitrators.
+* **Creator guard**: Reopening is rejected with `OngoingDispute` if the creator has another dispute in `Voting` or `Resolving`.
+* **Cost**: Reopen work is independent of the number of registered arbitrators.
+
 ---
 
 ## 🔍 Read-Only View Functions
@@ -96,9 +105,9 @@ Calculates the winner and closes the case.
 | Function | Returns | Description |
 | --- | --- | --- |
 | `get_dispute` | `Dispute` | Returns the full details and current status of a dispute. |
-| `get_tally` | `i128` | Returns the current accumulated weight for a specific outcome. |
+| `get_tally` | `i128` | Returns the current accumulated weight for a specific outcome in the current round. |
 | `get_arbitrator_weight` | `Result<u32, Error>` | Returns the voting weight of an arbitrator. Returns `Error::NotArbitrator` if unregistered. |
-| `has_voted` | `bool` | Returns `true` if the arbitrator has already voted on the specified dispute, `false` otherwise. |
+| `has_voted` | `bool` | Returns `true` if the arbitrator has voted in the current round, `false` otherwise. |
 | `get_arbitrators_page` | `(Vec<Address>, Option<u32>)` | Returns a page of registered arbitrator addresses starting at `cursor` up to `limit`. |
 
 ### 📖 Pagination Semantics (`get_arbitrators_page`)
@@ -120,7 +129,8 @@ Calculates the winner and closes the case.
 | `AlreadyInitialized` | Attempted to call `initialize` more than once. |
 | `WeightNotPositive` | Attempted to register an arbitrator with a weight $\le 0$. |
 | `VotingInactive` | Attempted to vote before the start or after the end time, or dispute not in Voting state. |
-| `AlreadyVoted` | Attempted to cast multiple votes on the same dispute. |
+| `AlreadyVoted` | Attempted to cast multiple votes in the same dispute round. |
+| `OngoingDispute` | The creator already has another dispute in `Voting` or `Resolving`. |
 | `VotingNotEnded` | Attempted to call `resolve_dispute` before the deadline. |
 | `NotArbitrator` | The specified address is not a registered arbitrator (returned by `get_arbitrator_weight` or `vote`). |
 | `DisputeNotFound` | The specified dispute ID does not exist in storage. |
